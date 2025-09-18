@@ -1,0 +1,6 @@
+name = "supcoba"
+main = "supjav.ts"
+compatibility_date = "2023-01-01"
+
+[vars]
+# Tambahkan variabel lingkungan jika ada
