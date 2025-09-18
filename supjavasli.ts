@@ -1,4 +1,6 @@
-const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:106.0) Gecko/20100101 Firefox/106.0";
+const UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:106.0) Gecko/20100101 Firefox/106.0";
+
 const Empty = new Response(null, { status: 404 });
 const GroupMap = {
   category: "category/",
@@ -6,107 +8,6 @@ const GroupMap = {
   cast: "category/cast/",
   tag: "tag/",
 };
-
-type MediaItem = {
-  id: string;
-  title: string;
-  thumb: string;
-};
-
-type MediaItemWithURL = MediaItem & {
-  m3u8Url: string;
-};
-
-function makeServerList(arr: RegExpMatchArray) {
-  const result: Record<string, string> = {};
-  for (const item of arr) {
-    const i = item.indexOf(">");
-    const key = item.slice(i + 1, -1);
-    const val = item.slice(11, i - 1);
-    result[key] = val;
-  }
-  return result;
-}
-
-export function extractMediaList(body: string): MediaItem[] | null {
-  const list = body.match(
-    /https:\/\/supjav\.com\/.*?\d+\.html.*?title=\".*?\".*?data-original=\".*?\"/gm,
-  );
-  if (!list) return null;
-  return list.map((item) => {
-    const id = item.match(/supjav\.com\/.*?(\d+)\.html/)![1];
-    const title = item.match(/title=\"(.*?)\"/)![1];
-    const thumb = item.match(/data-original=\"(.*?)\"/)![1].split("!")[0];
-    return { id, title, thumb };
-  });
-}
-
-async function fetchBody(url: string | URL) {
-  const req = await fetch(url, { headers: { "user-agent": UA } });
-  const body = await req.text();
-  return body;
-}
-
-async function getM3U8Asli(id: string) {
-  const req1 = await fetch(`https://supjav.com/${id}.html`, {
-    headers: {
-      referer: "https://supjav.com/",
-      "user-agent": UA,
-    },
-  });
-  const data1 = await req1.text();
-  const linkList = data1.match(/data-link\=".*?">.*?</mg);
-  if (!linkList) return null;
-  const serverMap = makeServerList(linkList);
-
-  const tvid = serverMap.TV.split("").reverse().join("");
-  const data2 = await (
-    await fetch(`https://lk1.supremejav.com/supjav.php?c=${tvid}`, {
-      headers: {
-        referer: "https://supjav.com/",
-        "user-agent": UA,
-      },
-    })
-  ).text();
-
-  const url = data2.match(/urlPlay.*?(https.*?\.m3u8)/m);
-  if (url === null) return null;
-  return url[1];
-}
-
-async function getList(base: URL, pages = 3) {
-  const arr = [fetchBody(base)];
-  for (let i = 2; i <= pages; i++) {
-    const u = new URL(base.href);
-    if (!u.pathname.endsWith("/")) u.pathname += "/";
-    u.pathname = u.pathname + "page/" + i;
-    arr.push(fetchBody(u));
-  }
-  const list = await Promise.all(arr);
-  const mediaList = list.map(extractMediaList).filter((i) => !!i).flat() as MediaItem[];
-
-  const updatedList: MediaItemWithURL[] = [];
-  for (const item of mediaList) {
-    const m3u8Url = await getM3U8Asli(item.id);
-    if (m3u8Url) {
-      updatedList.push({
-        ...item,
-        m3u8Url: m3u8Url,
-      });
-    }
-  }
-
-  return updatedList;
-}
-
-function makePlayList(list: MediaItemWithURL[]): string {
-  let str = "#EXTM3U\n";
-  for (const item of list) {
-    str += '#EXTINF:-1 tvg-logo="' + item.thumb + '",' + item.title + "\n";
-    str += item.m3u8Url + "\n";
-  }
-  return str;
-}
 
 async function handler(req: Request) {
   const uri = new URL(req.url);
@@ -117,6 +18,11 @@ async function handler(req: Request) {
   if (lang !== "zh" && lang !== "en" && lang !== "ja") {
     lang = "en";
   }
+
+  // Menghapus blok kode yang menangani pengalihan (redirect)
+  // if (uri.pathname.match(/^\/\d+(\.m3u|\.html|\.m3u8)?$/)) { ... }
+  // Menghapus blok kode untuk stream (proxy)
+  // if (uri.pathname.match(/^\/.*?\/stream\//)) { ... }
 
   if (uri.pathname.match(/^\/popular\/(day|week|month)$/)) {
     const type = uri.pathname.split("/").pop();
@@ -155,6 +61,108 @@ async function handler(req: Request) {
   }
 
   return Empty;
+}
+
+export async function getM3U8ById(id: string) {
+  const req1 = await fetch(`https://supjav.com/${id}.html`, {
+    headers: {
+      referer: "https://supjav.com/",
+      "user-agent": UA,
+    },
+  });
+  const data1 = await req1.text();
+  const linkList = data1.match(/data-link\=".*?">.*?</mg);
+  if (!linkList) return null;
+  const serverMap = makeServerList(linkList);
+
+  const tvid = serverMap.TV.split("").reverse().join("");
+  const data2 = await (
+    await fetch(`https://lk1.supremejav.com/supjav.php?c=${tvid}`, {
+      headers: {
+        referer: "https://supjav.com/",
+        "user-agent": UA,
+      },
+    })
+  ).text();
+
+  const url = data2.match(/urlPlay.*?(https.*?\.m3u8)/m);
+  if (url === null) return null;
+  return url[1];
+}
+
+type MediaItem = {
+  id: string;
+  title: string;
+  thumb: string;
+};
+
+type MediaItemWithURL = MediaItem & {
+  m3u8Url: string;
+};
+
+export function extractMediaList(body: string): MediaItem[] | null {
+  const list = body.match(
+    /https:\/\/supjav\.com\/.*?\d+\.html.*?title=\".*?\".*?data-original=\".*?\"/gm,
+  );
+  if (!list) return null;
+  return list.map((item) => {
+    const id = item.match(/supjav\.com\/.*?(\d+)\.html/)![1];
+    const title = item.match(/title=\"(.*?)\"/)![1];
+    const thumb = item.match(/data-original=\"(.*?)\"/)![1].split("!")[0];
+    return { id, title, thumb };
+  });
+}
+
+async function fetchBody(url: string | URL) {
+  const req = await fetch(url, { headers: { "user-agent": UA } });
+  const body = await req.text();
+  return body;
+}
+
+async function getList(base: URL, pages = 3) {
+  console.log("BASE:", base.href);
+  const arr = [fetchBody(base)];
+  for (let i = 2; i <= pages; i++) {
+    const u = new URL(base.href);
+    if (!u.pathname.endsWith("/")) u.pathname += "/";
+    u.pathname = u.pathname + "page/" + i;
+    arr.push(fetchBody(u));
+  }
+  const list = await Promise.all(arr);
+  const mediaList = list.map(extractMediaList).filter((i) => !!i).flat() as MediaItem[];
+
+  const updatedList: MediaItemWithURL[] = [];
+  for (const item of mediaList) {
+    const m3u8Url = await getM3U8ById(item.id);
+    if (m3u8Url) {
+      updatedList.push({
+        ...item,
+        m3u8Url: m3u8Url,
+      });
+    }
+  }
+
+  return updatedList;
+}
+
+function makePlayList(list: MediaItemWithURL[]): string {
+  let str = "#EXTM3U\n";
+  for (const item of list) {
+    str += '#EXTINF:-1 tvg-logo="' + item.thumb + '",' + item.title + "\n";
+    str += item.m3u8Url + "\n";
+  }
+  return str;
+}
+
+function makeServerList(arr: RegExpMatchArray) {
+  const result: Record<string, string> = {};
+  for (const item of arr) {
+    const i = item.indexOf(">");
+    const key = item.slice(i + 1, -1);
+    const val = item.slice(11, i - 1);
+    result[key] = val;
+  }
+  return result;
 }
 
 export default { fetch: handler };
