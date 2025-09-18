@@ -1,7 +1,8 @@
 name = "supcoba"
 main = "supjavasli.ts"
-compatibility_date = "2023-01-01"
+compatibility_date = "2023-02-01"
 
 [vars]
 
 # Tambahkan variabel lingkungan jika ada
+
