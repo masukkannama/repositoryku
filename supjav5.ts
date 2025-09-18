@@ -1,0 +1,142 @@
+const UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:106.0) Gecko/20100101 Firefox/106.0";
+
+const Empty = new Response(null, { status: 404 });
+const GroupMap = {
+  category: "category/",
+  maker: "category/maker/",
+  cast: "category/cast/",
+  tag: "tag/",
+};
+
+type MediaItem = {
+  id: string;
+  title: string;
+  thumb: string;
+};
+
+type MediaItemWithURL = MediaItem & {
+  m3u8Url: string;
+};
+
+async function handler(req: Request) {
+  const uri = new URL(req.url);
+  let lang = uri.searchParams.get("lang") || "en";
+  console.log(new Date().toISOString(), uri.pathname);
+
+  if (req.method !== "GET") return Empty;
+  if (lang !== "zh" && lang !== "en" && lang !== "ja") {
+    lang = "en";
+  }
+
+  // Menangani permintaan untuk data JSON
+  if (uri.pathname.match(/^\/json\/(day|week|month|search|category|maker|cast|tag)/)) {
+    let list: MediaItemWithURL[] | null = null;
+    let base: URL;
+
+    const pathParts = uri.pathname.split('/');
+    const type = pathParts[2];
+    const param = pathParts.slice(3).join('/');
+
+    if (type === 'day' || type === 'week' || type === 'month') {
+      base = new URL(`/${lang}/popular`, "https://supjav.com");
+      base.searchParams.set("sort", type);
+      list = await getList(base);
+    } else if (type === 'search') {
+      base = new URL(`/${lang}/`, "https://supjav.com");
+      base.searchParams.set("s", param);
+      list = await getList(base);
+    } else {
+      const key = type;
+      const pages = parseInt(uri.searchParams.get("pages") || "1");
+      
+      let p = "/";
+      if (lang !== "en") p += lang + "/";
+      base = new URL(p + GroupMap[key as keyof typeof GroupMap] + param, "https://supjav.com");
+      list = await getList(base, pages);
+    }
+
+    if (!list) return Empty;
+
+    // Mengembalikan data dalam format JSON
+    return new Response(JSON.stringify(list, null, 2), {
+      headers: { 'content-type': 'application/json' }
+    });
+  }
+
+  return Empty;
+}
+
+// Fungsi-fungsi pembantu tetap sama
+async function getM3U8ById(id: string) {
+  const req1 = await fetch(`https://supjav.com/${id}.html`, {
+    headers: { "referer": "https://supjav.com/", "user-agent": UA },
+  });
+  const data1 = await req1.text();
+  const linkList = data1.match(/data-link\=".*?">.*?</mg);
+  if (!linkList) return null;
+  const serverMap = makeServerList(linkList);
+
+  const tvid = serverMap.TV.split("").reverse().join("");
+  const data2 = await (await fetch(`https://lk1.supremejav.com/supjav.php?c=${tvid}`, {
+    headers: { "referer": "https://supjav.com/", "user-agent": UA },
+  })).text();
+
+  const url = data2.match(/urlPlay.*?(https.*?\.m3u8)/m);
+  if (url === null) return null;
+  return url[1];
+}
+
+export function extractMediaList(body: string): MediaItem[] | null {
+  const list = body.match(
+    /https:\/\/supjav\.com\/.*?\d+\.html.*?title=\".*?\".*?data-original=\".*?\"/gm,
+  );
+  if (!list) return null;
+  return list.map((item) => {
+    const id = item.match(/supjav\.com\/.*?(\d+)\.html/)![1];
+    const title = item.match(/title=\"(.*?)\"/)![1];
+    const thumb = item.match(/data-original=\"(.*?)\"/)![1].split("!")[0];
+    return { id, title, thumb };
+  });
+}
+
+async function fetchBody(url: string | URL) {
+  const req = await fetch(url, { headers: { "user-agent": UA } });
+  const body = await req.text();
+  return body;
+}
+
+async function getList(base: URL, pages = 3) {
+  console.log("BASE:", base.href);
+  const arr = [fetchBody(base)];
+  for (let i = 2; i <= pages; i++) {
+    const u = new URL(base.href);
+    if (!u.pathname.endsWith("/")) u.pathname += "/";
+    u.pathname = u.pathname + "page/" + i;
+    arr.push(fetchBody(u));
+  }
+  const list = await Promise.all(arr);
+  const mediaList = list.map(extractMediaList).filter((i) => !!i).flat() as MediaItem[];
+
+  const updatedList: MediaItemWithURL[] = [];
+  for (const item of mediaList) {
+    const m3u8Url = await getM3U8ById(item.id);
+    if (m3u8Url) {
+      updatedList.push({ ...item, m3u8Url: m3u8Url });
+    }
+  }
+  return updatedList;
+}
+
+function makeServerList(arr: RegExpMatchArray) {
+  const result: Record<string, string> = {};
+  for (const item of arr) {
+    const i = item.indexOf(">");
+    const key = item.slice(i + 1, -1);
+    const val = item.slice(11, i - 1);
+    result[key] = val;
+  }
+  return result;
+}
+
+export default { fetch: handler };
