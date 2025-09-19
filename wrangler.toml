@@ -1,5 +1,5 @@
 name = "supcoba"
-main = "supjav8.ts"
+main = "supjav9.ts"
 compatibility_date = "2023-02-01"
 
 [vars]
@@ -12,6 +12,7 @@ enabled = false
 
 
 # Tambahkan variabel lingkungan jika ada
+
 
 
 
