@@ -1,13 +1,28 @@
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const REFERER = "https://supjav.com/";
 
-const Empty = new Response(JSON.stringify({ error: "Not found" }), { 
-  status: 404, 
-  headers: { 
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*"
-  } 
-});
+// Empty response helper
+function createEmptyResponse(message: string = "Not found", status: number = 404): Response {
+  return new Response(JSON.stringify({ error: message }), { 
+    status, 
+    headers: { 
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*"
+    } 
+  });
+}
+
+// JSON response helper
+function createJsonResponse(data: any, status: number = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "public, max-age=3600"
+    }
+  });
+}
 
 async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
@@ -26,9 +41,14 @@ async function handler(req: Request): Promise<Response> {
     });
   }
   
+  // Only allow GET requests
+  if (req.method !== "GET") {
+    return createEmptyResponse("Method not allowed", 405);
+  }
+  
   // Root endpoint - show available endpoints
   if (pathname === "/") {
-    return new Response(JSON.stringify({
+    return createJsonResponse({
       message: "SupJav API Worker",
       endpoints: {
         single_video: "/video/367025",
@@ -36,11 +56,6 @@ async function handler(req: Request): Promise<Response> {
         search: "/search/query",
         categories: "/category/name"
       }
-    }), { 
-      headers: { 
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*"
-      } 
     });
   }
   
@@ -48,72 +63,38 @@ async function handler(req: Request): Promise<Response> {
   if (pathname.startsWith("/video/")) {
     const videoId = pathname.split("/").pop();
     if (!videoId || !videoId.match(/^\d+$/)) {
-      return new Response(JSON.stringify({ error: "Invalid video ID" }), {
-        status: 400,
-        headers: { 
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*"
-        }
-      });
+      return createEmptyResponse("Invalid video ID", 400);
     }
     
     const videoInfo = await getVideoInfo(videoId);
-    if (!videoInfo) return Empty;
+    if (!videoInfo) return createEmptyResponse("Video not found");
     
-    return new Response(JSON.stringify(videoInfo), {
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-        "Cache-Control": "public, max-age=3600"
-      }
-    });
+    return createJsonResponse(videoInfo);
   }
   
   // Popular videos
   if (pathname.startsWith("/popular/")) {
     const period = pathname.split("/").pop();
     if (!period || !["day", "week", "month"].includes(period)) {
-      return new Response(JSON.stringify({ error: "Invalid period. Use: day, week, month" }), {
-        status: 400,
-        headers: { 
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*"
-        }
-      });
+      return createEmptyResponse("Invalid period. Use: day, week, month", 400);
     }
     
     const videos = await getPopularVideos(period);
-    return new Response(JSON.stringify({ period, videos }), {
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*"
-      }
-    });
+    return createJsonResponse({ period, videos });
   }
   
   // Search videos
   if (pathname.startsWith("/search/")) {
     const query = decodeURIComponent(pathname.split("/").slice(2).join("/"));
     if (!query) {
-      return new Response(JSON.stringify({ error: "Search query required" }), {
-        status: 400,
-        headers: { 
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*"
-        }
-      });
+      return createEmptyResponse("Search query required", 400);
     }
     
     const videos = await searchVideos(query);
-    return new Response(JSON.stringify({ query, videos }), {
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*"
-      }
-    });
+    return createJsonResponse({ query, videos });
   }
   
-  return Empty;
+  return createEmptyResponse();
 }
 
 // Get detailed video information
@@ -307,19 +288,14 @@ async function searchVideos(query: string): Promise<Array<{id: string, title: st
   }
 }
 
+// Export handler correctly for Cloudflare Workers
 export default {
-  async fetch(request: Request, env: any, ctx: ExecutionContext) {
+  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
     try {
       return await handler(request);
     } catch (error) {
       console.error("Unhandled error:", error);
-      return new Response(JSON.stringify({ error: "Internal server error" }), {
-        status: 500,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*"
-        }
-      });
+      return createEmptyResponse("Internal server error", 500);
     }
   }
 };
