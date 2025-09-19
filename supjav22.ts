@@ -1,151 +1,174 @@
-const UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:106.0) Gecko/20100101 Firefox/106.0";
-
-const Empty = new Response(null, { status: 404 });
-
-type MediaItem = {
+export interface MediaItem {
   id: string;
   title: string;
   thumb: string;
   m3u8Url: string | null;
-};
+}
 
-async function handler(req: Request) {
-  const url = new URL(req.url);
-  if (req.method !== "GET") return Empty;
+const BASE_URL = "https://supjav.com";
 
-  // endpoint list (day, week, month, search, category, tag, cast, maker)
-  if (url.pathname.startsWith("/json/list/")) {
-    const parts = url.pathname.split("/").filter(Boolean);
-    const type = parts[2];
-    const keyword = parts[3] || "";
-    return handleList(req, type, keyword);
-  }
+async function fetchList(url: string, page: number, count: number): Promise<any> {
+  const res = await fetch(`${url}?page=${page}`);
+  const text = await res.text();
 
-  // endpoint all by ids: /json/all/123-124-125
-  if (url.pathname.startsWith("/json/all/")) {
-    const parts = url.pathname.split("/").filter(Boolean);
-
-    // range mode
-    if (parts[2] === "range") {
-      const [start, end] = parts[3].split("-").map((x) => parseInt(x, 10));
-      const ids: string[] = [];
-      for (let i = start; i <= end; i++) ids.push(String(i));
-      const items = await Promise.all(ids.map(fetchFullById));
-      return new Response(JSON.stringify(items, null, 2), {
-        headers: { "content-type": "application/json" },
-      });
-    }
-
-    // manual list
-    const ids = parts[2].split("-");
-    const items = await Promise.all(ids.map(fetchFullById));
-    return new Response(JSON.stringify(items, null, 2), {
-      headers: { "content-type": "application/json" },
+  const regex = /<a href="\/video\/(\d+)".*?title="([^"]+)".*?<img[^>]+src="([^"]+)"/gs;
+  const items: MediaItem[] = [];
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    items.push({
+      id: match[1],
+      title: match[2],
+      thumb: match[3],
+      m3u8Url: null,
     });
   }
 
-  return Empty;
+  const start = (page - 1) * count;
+  const end = start + count;
+  return {
+    page,
+    count,
+    items: items.slice(start, end),
+  };
 }
-
-// -------------------- LIST HANDLER --------------------
-
-async function handleList(req: Request, type: string, keyword?: string) {
-  const url = new URL(req.url);
-  const page = parseInt(url.searchParams.get("page") || "1", 10);
-  const count = Math.min(
-    parseInt(url.searchParams.get("count") || "10", 10),
-    20
-  ); // default 10, max 20
-
-  let targetUrl = "";
-  if (["day", "week", "month"].includes(type)) {
-    targetUrl = `https://supjav.com/${type}/${page}`;
-  } else if (type === "search" && keyword) {
-    targetUrl = `https://supjav.com/search/${encodeURIComponent(keyword)}/${page}`;
-  } else if (type === "category" && keyword) {
-    targetUrl = `https://supjav.com/category/${encodeURIComponent(keyword)}/${page}`;
-  } else if (type === "tag" && keyword) {
-    targetUrl = `https://supjav.com/tag/${encodeURIComponent(keyword)}/${page}`;
-  } else if (type === "cast" && keyword) {
-    targetUrl = `https://supjav.com/cast/${encodeURIComponent(keyword)}/${page}`;
-  } else if (type === "maker" && keyword) {
-    targetUrl = `https://supjav.com/maker/${encodeURIComponent(keyword)}/${page}`;
-  } else {
-    return Empty;
-  }
-
-  const res = await fetch(targetUrl, {
-    headers: { "user-agent": UA, referer: "https://supjav.com/" },
-  });
-  const html = await res.text();
-
-  // ambil ID dari halaman
-  const matches = [...html.matchAll(/href="\/(\d+)\.html"/g)];
-  const ids = matches.map((m) => m[1]).slice(0, count);
-
-  // ambil detail lengkap
-  const items = await Promise.all(ids.map(fetchFullById));
-
-  return new Response(JSON.stringify({ page, count, items }, null, 2), {
-    headers: { "content-type": "application/json" },
-  });
-}
-
-// -------------------- FETCH DETAIL --------------------
 
 async function fetchFullById(id: string): Promise<MediaItem> {
-  const url = `https://supjav.com/${id}.html`;
-  const res = await fetch(url, {
-    headers: { "user-agent": UA, referer: "https://supjav.com/" },
-  });
-  const html = await res.text();
+  const res = await fetch(`${BASE_URL}/video/${id}`);
+  const text = await res.text();
 
-  // Title (meta og:title → fallback ke <title>)
-  const titleMatch =
-    html.match(/<meta\s+property="og:title"\s+content="(.*?)"/i) ||
-    html.match(/<title>(.*?)<\/title>/i);
-  const title = titleMatch ? titleMatch[1].trim() : "";
+  const titleMatch = text.match(/<title>(.*?)<\/title>/);
+  const title = titleMatch ? titleMatch[1].replace(" - SupJAV.com", "") : "";
 
-  // Thumbnail (meta og:image → fallback data-original/src)
-  const imgMatch =
-    html.match(/<meta\s+property="og:image"\s+content="(.*?)"/i) ||
-    html.match(/data-original="(.*?)"/i) ||
-    html.match(/src="(https:\/\/[^"]+\.jpg)"/i);
-  const thumb = imgMatch ? imgMatch[1].split("!")[0] : "";
+  const thumbMatch = text.match(/property="og:image" content="([^"]+)"/);
+  const thumb = thumbMatch ? thumbMatch[1] : "";
 
-  // M3U8 URL
-  const m3u8Url = await getM3U8FromHtml(html);
+  const m3u8Match =
+    text.match(/https?:\/\/[^"]+\.m3u8/) ||
+    text.match(/"file":"(https?:\/\/[^"]+\.m3u8)"/);
+
+  const m3u8Url = m3u8Match ? m3u8Match[1] : null;
 
   return { id, title, thumb, m3u8Url };
 }
 
-async function getM3U8FromHtml(html: string): Promise<string | null> {
-  const linkList = html.match(/data-link\=".*?">.*?</gm);
-  if (!linkList) return null;
-
-  const serverMap = makeServerList(linkList);
-  if (!serverMap.TV) return null;
-
-  const tvid = serverMap.TV.split("").reverse().join("");
-  const res = await fetch(
-    `https://lk1.supremejav.com/supjav.php?c=${tvid}`,
-    { headers: { referer: "https://supjav.com/", "user-agent": UA } }
-  );
-  const text = await res.text();
-  const urlMatch = text.match(/urlPlay.*?(https.*?\.m3u8)/m);
-  return urlMatch ? urlMatch[1] : null;
-}
-
-function makeServerList(arr: RegExpMatchArray) {
-  const result: Record<string, string> = {};
-  for (const item of arr) {
-    const i = item.indexOf(">");
-    const key = item.slice(i + 1, -1);
-    const val = item.slice(11, i - 1);
-    result[key] = val;
+async function fetchIds(ids: string[]): Promise<MediaItem[]> {
+  const items: MediaItem[] = [];
+  for (const id of ids) {
+    try {
+      const item = await fetchFullById(id);
+      items.push(item);
+      // delay kecil supaya tidak overload
+      await new Promise((r) => setTimeout(r, 150));
+    } catch (e) {
+      console.error("Error fetch id", id, e);
+    }
   }
-  return result;
+  return items;
 }
 
-export default { fetch: handler };
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const parts = url.pathname.split("/").filter(Boolean);
+
+    const page = parseInt(url.searchParams.get("page") || "1");
+    const count = parseInt(url.searchParams.get("count") || "10");
+
+    try {
+      // ✅ list endpoints
+      if (parts[0] === "json" && parts[1] === "list") {
+        if (parts[2] === "day") {
+          return new Response(
+            JSON.stringify(await fetchList(`${BASE_URL}/day`, page, count), null, 2),
+            { headers: { "content-type": "application/json" } }
+          );
+        }
+        if (parts[2] === "week") {
+          return new Response(
+            JSON.stringify(await fetchList(`${BASE_URL}/week`, page, count), null, 2),
+            { headers: { "content-type": "application/json" } }
+          );
+        }
+        if (parts[2] === "month") {
+          return new Response(
+            JSON.stringify(await fetchList(`${BASE_URL}/month`, page, count), null, 2),
+            { headers: { "content-type": "application/json" } }
+          );
+        }
+        if (parts[2] === "search") {
+          const keyword = parts[3];
+          return new Response(
+            JSON.stringify(
+              await fetchList(`${BASE_URL}/search/${keyword}`, page, count),
+              null,
+              2
+            ),
+            { headers: { "content-type": "application/json" } }
+          );
+        }
+        if (parts[2].startsWith("category")) {
+          const cat = parts[2].replace("category", "");
+          return new Response(
+            JSON.stringify(await fetchList(`${BASE_URL}/category/${cat}`, page, count), null, 2),
+            { headers: { "content-type": "application/json" } }
+          );
+        }
+        if (parts[2] === "tag") {
+          const tag = parts[3];
+          return new Response(
+            JSON.stringify(await fetchList(`${BASE_URL}/tag/${tag}`, page, count), null, 2),
+            { headers: { "content-type": "application/json" } }
+          );
+        }
+        if (parts[2] === "cast") {
+          const cast = parts[3];
+          return new Response(
+            JSON.stringify(await fetchList(`${BASE_URL}/cast/${cast}`, page, count), null, 2),
+            { headers: { "content-type": "application/json" } }
+          );
+        }
+        if (parts[2] === "maker") {
+          const maker = parts[3];
+          return new Response(
+            JSON.stringify(await fetchList(`${BASE_URL}/maker/${maker}`, page, count), null, 2),
+            { headers: { "content-type": "application/json" } }
+          );
+        }
+      }
+
+      // ✅ all endpoints
+      if (parts[0] === "json" && parts[1] === "all") {
+        // manual id list
+        if (parts[2] && !parts[2].startsWith("range")) {
+          const ids = parts[2].split("-").slice(0, count);
+          const items = await fetchIds(ids);
+          return new Response(JSON.stringify(items, null, 2), {
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        // range id
+        if (parts[2] === "range" && parts[3]) {
+          const [start, end] = parts[3].split("-").map((x) => parseInt(x, 10));
+          let ids: string[] = [];
+          for (let i = start; i <= end; i++) ids.push(String(i));
+          ids = ids.slice(0, count);
+          const items = await fetchIds(ids);
+          return new Response(JSON.stringify(items, null, 2), {
+            headers: { "content-type": "application/json" },
+          });
+        }
+      }
+
+      return new Response(JSON.stringify({ error: "Invalid endpoint" }), {
+        headers: { "content-type": "application/json" },
+        status: 404,
+      });
+    } catch (err: any) {
+      return new Response(JSON.stringify({ error: err.message }), {
+        headers: { "content-type": "application/json" },
+        status: 500,
+      });
+    }
+  },
+};
