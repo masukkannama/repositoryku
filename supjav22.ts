@@ -12,7 +12,6 @@ type MediaItem = {
 
 async function handler(req: Request) {
   const url = new URL(req.url);
-
   if (req.method !== "GET") return Empty;
 
   // endpoint list (day, week, month, search, category, tag, cast, maker)
@@ -20,34 +19,36 @@ async function handler(req: Request) {
     const parts = url.pathname.split("/").filter(Boolean);
     const type = parts[2];
     const keyword = parts[3] || "";
-
     return handleList(req, type, keyword);
   }
 
   // endpoint all by ids: /json/all/123-124-125
   if (url.pathname.startsWith("/json/all/")) {
     const parts = url.pathname.split("/").filter(Boolean);
+
+    // range mode
     if (parts[2] === "range") {
       const [start, end] = parts[3].split("-").map((x) => parseInt(x, 10));
-      const ids = [];
+      const ids: string[] = [];
       for (let i = start; i <= end; i++) ids.push(String(i));
       const items = await Promise.all(ids.map(fetchFullById));
       return new Response(JSON.stringify(items, null, 2), {
         headers: { "content-type": "application/json" },
       });
-    } else {
-      const ids = parts[2].split("-");
-      const items = await Promise.all(ids.map(fetchFullById));
-      return new Response(JSON.stringify(items, null, 2), {
-        headers: { "content-type": "application/json" },
-      });
     }
+
+    // manual list
+    const ids = parts[2].split("-");
+    const items = await Promise.all(ids.map(fetchFullById));
+    return new Response(JSON.stringify(items, null, 2), {
+      headers: { "content-type": "application/json" },
+    });
   }
 
   return Empty;
 }
 
-// -------------------- HELPERS --------------------
+// -------------------- LIST HANDLER --------------------
 
 async function handleList(req: Request, type: string, keyword?: string) {
   const url = new URL(req.url);
@@ -91,6 +92,8 @@ async function handleList(req: Request, type: string, keyword?: string) {
   });
 }
 
+// -------------------- FETCH DETAIL --------------------
+
 async function fetchFullById(id: string): Promise<MediaItem> {
   const url = `https://supjav.com/${id}.html`;
   const res = await fetch(url, {
@@ -98,14 +101,20 @@ async function fetchFullById(id: string): Promise<MediaItem> {
   });
   const html = await res.text();
 
-  const titleMatch = html.match(/<title>(.*?)<\/title>/i);
-  const imgMatch =
-    html.match(/data-original="(.*?)"/) ||
-    html.match(/src="(https:\/\/[^"]+\.jpg)"/);
-
+  // Title (meta og:title → fallback ke <title>)
+  const titleMatch =
+    html.match(/<meta\s+property="og:title"\s+content="(.*?)"/i) ||
+    html.match(/<title>(.*?)<\/title>/i);
   const title = titleMatch ? titleMatch[1].trim() : "";
+
+  // Thumbnail (meta og:image → fallback data-original/src)
+  const imgMatch =
+    html.match(/<meta\s+property="og:image"\s+content="(.*?)"/i) ||
+    html.match(/data-original="(.*?)"/i) ||
+    html.match(/src="(https:\/\/[^"]+\.jpg)"/i);
   const thumb = imgMatch ? imgMatch[1].split("!")[0] : "";
 
+  // M3U8 URL
   const m3u8Url = await getM3U8FromHtml(html);
 
   return { id, title, thumb, m3u8Url };
