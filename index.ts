@@ -115,47 +115,75 @@ async function getVideoInfo(videoId: string): Promise<{id: string, title: string
     }
     
     const html = await response.text();
+    console.log(`HTML length: ${html.length} characters`);
     
-    // Extract title
+    // Extract title - multiple methods
+    let title = `Video ${videoId}`;
     const titleMatch = html.match(/<title>([^<]+)<\/title>/);
-    let title = titleMatch ? titleMatch[1].replace(/ - Supjav|&#\d+;/g, '').trim() : `Video ${videoId}`;
+    if (titleMatch) {
+      title = titleMatch[1]
+        .replace(/ - Supjav|&#\d+;/g, '')
+        .replace(/&amp;/g, '&')
+        .trim();
+    }
     
-    // Extract thumbnail
-    const thumbMatch = html.match(/<meta property="og:image" content="([^"]+)"/);
-    let thumb = thumbMatch ? thumbMatch[1] : '';
+    // Extract thumbnail - multiple methods
+    let thumb = '';
+    const thumbMatch1 = html.match(/<meta property="og:image" content="([^"]+)"/);
+    const thumbMatch2 = html.match(/data-original="([^"]+)"/);
+    const thumbMatch3 = html.match(/<img[^>]+src="([^"]+\.jpg[^"]*)"/);
     
-    // Clean up thumbnail URL (remove resize parameters)
+    if (thumbMatch1) thumb = thumbMatch1[1];
+    else if (thumbMatch2) thumb = thumbMatch2[1];
+    else if (thumbMatch3) thumb = thumbMatch3[1];
+    
+    // Clean up thumbnail URL
     if (thumb.includes('!')) {
       thumb = thumb.split('!')[0];
     }
-    
-    // Extract M3U8 URL - try multiple methods
-    let m3u8Url = null;
-    
-    // Method 1: Direct M3U8 link in HTML
-    const m3u8Match = html.match(/(https?:\/\/[^\s"']+\.m3u8)/);
-    if (m3u8Match) {
-      m3u8Url = m3u8Match[1];
-      console.log("Found M3U8 in HTML:", m3u8Url);
+    if (thumb.startsWith('//')) {
+      thumb = 'https:' + thumb;
     }
     
-    // Method 2: Player data
+    // Extract M3U8 URL - multiple methods with better regex
+    let m3u8Url = null;
+    
+    // Method 1: Look for m3u8 in script tags
+    const scriptRegex = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+    let scriptMatch;
+    
+    while ((scriptMatch = scriptRegex.exec(html)) !== null) {
+      const scriptContent = scriptMatch[1];
+      const urlMatch = scriptContent.match(/(https?:\/\/[^\s'"]+\.m3u8)/);
+      if (urlMatch) {
+        m3u8Url = urlMatch[1];
+        console.log("Found M3U8 in script:", m3u8Url);
+        break;
+      }
+    }
+    
+    // Method 2: Look for player data
     if (!m3u8Url) {
-      const playerDataMatch = html.match(/var playerData\s*=\s*({[^}]+})/);
+      const playerDataMatch = html.match(/playerData\s*=\s*({[^}]+})/);
       if (playerDataMatch) {
         try {
-          const playerData = JSON.parse(playerDataMatch[1]);
+          // Clean the JSON string
+          const jsonStr = playerDataMatch[1]
+            .replace(/(\w+):/g, '"$1":')
+            .replace(/'/g, '"');
+          
+          const playerData = JSON.parse(jsonStr);
           if (playerData.url && playerData.url.includes('.m3u8')) {
             m3u8Url = playerData.url;
             console.log("Found M3U8 in playerData:", m3u8Url);
           }
         } catch (e) {
-          console.log("Error parsing playerData");
+          console.log("Error parsing playerData:", e);
         }
       }
     }
     
-    // Method 3: Iframe source
+    // Method 3: Look for iframe embeds
     if (!m3u8Url) {
       const iframeMatch = html.match(/<iframe[^>]+src="([^"]+)"/);
       if (iframeMatch) {
@@ -184,8 +212,36 @@ async function getVideoInfo(videoId: string): Promise<{id: string, title: string
       }
     }
     
+    // Method 4: Look for data-link attributes (common in jav sites)
     if (!m3u8Url) {
-      console.log("No M3U8 URL found");
+      const dataLinkMatch = html.match(/data-link="([^"]+)"/);
+      if (dataLinkMatch) {
+        const dataLink = dataLinkMatch[1];
+        console.log("Found data-link:", dataLink);
+        
+        // Sometimes data-link contains the actual URL or a coded URL
+        if (dataLink.includes('.m3u8')) {
+          m3u8Url = dataLink;
+        } else {
+          // Try to decode or process the data-link
+          try {
+            // Common pattern: reverse the string and decode
+            const reversed = dataLink.split('').reverse().join('');
+            const decoded = atob(reversed);
+            if (decoded.includes('.m3u8')) {
+              m3u8Url = decoded;
+              console.log("Decoded M3U8 from data-link:", m3u8Url);
+            }
+          } catch (e) {
+            console.log("Could not decode data-link");
+          }
+        }
+      }
+    }
+    
+    if (!m3u8Url) {
+      console.log("No M3U8 URL found after trying all methods");
+      console.log("Sample HTML (first 1000 chars):", html.substring(0, 1000));
       return null;
     }
     
@@ -220,16 +276,26 @@ async function getPopularVideos(period: string): Promise<Array<{id: string, titl
     const html = await response.text();
     const videos: Array<{id: string, title: string, thumb: string}> = [];
     
-    // Find video entries
-    const videoRegex = /<a href="https:\/\/supjav\.com\/(\d+)\.html"[^>]*title="([^"]*)"[^>]*data-original="([^"]*)"/g;
+    // Find video entries using more flexible regex
+    const videoRegex = /<a\s+href="https:\/\/supjav\.com\/(\d+)\.html"[^>]*title="([^"]*)"[^>]*data-original="([^"]*)"/g;
     let match;
     
     while ((match = videoRegex.exec(html)) !== null) {
-      const thumb = match[3].includes('!') ? match[3].split('!')[0] : match[3];
+      let thumb = match[3];
+      
+      // Clean up thumbnail URL
+      if (thumb.includes('!')) {
+        thumb = thumb.split('!')[0];
+      }
+      if (thumb.startsWith('//')) {
+        thumb = 'https:' + thumb;
+      }
       
       videos.push({
         id: match[1],
-        title: match[2].replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code))),
+        title: match[2]
+          .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)))
+          .replace(/&amp;/g, '&'),
         thumb: thumb
       });
       
@@ -264,15 +330,25 @@ async function searchVideos(query: string): Promise<Array<{id: string, title: st
     const videos: Array<{id: string, title: string, thumb: string}> = [];
     
     // Find video entries in search results
-    const videoRegex = /<a href="https:\/\/supjav\.com\/(\d+)\.html"[^>]*title="([^"]*)"[^>]*data-original="([^"]*)"/g;
+    const videoRegex = /<a\s+href="https:\/\/supjav\.com\/(\d+)\.html"[^>]*title="([^"]*)"[^>]*data-original="([^"]*)"/g;
     let match;
     
     while ((match = videoRegex.exec(html)) !== null) {
-      const thumb = match[3].includes('!') ? match[3].split('!')[0] : match[3];
+      let thumb = match[3];
+      
+      // Clean up thumbnail URL
+      if (thumb.includes('!')) {
+        thumb = thumb.split('!')[0];
+      }
+      if (thumb.startsWith('//')) {
+        thumb = 'https:' + thumb;
+      }
       
       videos.push({
         id: match[1],
-        title: match[2].replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code))),
+        title: match[2]
+          .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code)))
+          .replace(/&amp;/g, '&'),
         thumb: thumb
       });
       
