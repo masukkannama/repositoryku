@@ -1,6 +1,6 @@
 name = "supcoba"
 compatibility_date = "2023-02-01"
-main = "supjav18.ts"
+main = "supjav20.ts"
 [vars]
 
 # wrangler.toml (wrangler v3.88.0^)
@@ -11,6 +11,7 @@ enabled = false
 
 
 # Tambahkan variabel lingkungan jika ada
+
 
 
 
