@@ -13,17 +13,55 @@ const GroupMap = {
 
 async function handler(req: Request): Promise<Response> {
   const uri = new URL(req.url);
+  const pathname = uri.pathname;
   let lang = uri.searchParams.get("lang") || "en";
-  console.log(new Date().toISOString(), 'Request:', uri.pathname);
+  
+  console.log(new Date().toISOString(), 'Request:', pathname);
 
   if (req.method !== "GET") return Empty;
   if (lang !== "zh" && lang !== "en" && lang !== "ja") {
     lang = "en";
   }
 
+  // Handler untuk root path
+  if (pathname === "/" || pathname === "") {
+    return new Response(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>SupJav Proxy</title>
+        <style>
+          body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+          h1 { color: #333; }
+          ul { list-style: none; padding: 0; }
+          li { margin: 10px 0; }
+          a { color: #007bff; text-decoration: none; }
+          a:hover { text-decoration: underline; }
+        </style>
+      </head>
+      <body>
+        <h1>SupJav Proxy Worker</h1>
+        <p>Available endpoints:</p>
+        <ul>
+          <li><a href="/popular/week">Popular This Week</a></li>
+          <li><a href="/popular/month">Popular This Month</a></li>
+          <li><a href="/category/uncensored">Uncensored Category</a></li>
+          <li><a href="/search/japanese">Search "japanese"</a></li>
+        </ul>
+        <p>Use direct video ID: <code>/367025.m3u8</code></p>
+      </body>
+      </html>
+    `, {
+      headers: {
+        "Content-Type": "text/html",
+        "Access-Control-Allow-Origin": "*"
+      }
+    });
+  }
+
   // Tangani permintaan M3U8 langsung
-  if (uri.pathname.match(/^\/\d+\.m3u8$/)) {
-    const id = uri.pathname.match(/\d+/)![0];
+  if (pathname.match(/^\/\d+\.m3u8$/)) {
+    const id = pathname.match(/\d+/)![0];
     console.log('Fetching M3U8 for ID:', id);
     
     const masterUrl = await getM3U8ById(id);
@@ -34,13 +72,11 @@ async function handler(req: Request): Promise<Response> {
       return Empty;
     }
     
-    // Ambil master playlist
     try {
       const masterResponse = await fetch(masterUrl, {
         headers: {
           "Referer": "https://supjav.com/",
           "User-Agent": UA,
-          "Origin": "https://supjav.com"
         },
       });
       
@@ -50,16 +86,19 @@ async function handler(req: Request): Promise<Response> {
       }
       
       let masterContent = await masterResponse.text();
-      console.log('Master playlist content:\n', masterContent);
+      console.log('Master playlist received');
       
-      // Pilih stream quality (biasanya yang pertama adalah yang terendah)
-      const streamMatch = masterContent.match(/^https?:\/\/[^\s]+\.m3u8$/m);
-      if (!streamMatch) {
-        console.log('No variant streams found in master playlist');
+      // Pilih stream quality (ambil yang pertama)
+      const streamLines = masterContent.split('\n').filter(line => 
+        line.startsWith('https://') && line.includes('.m3u8')
+      );
+      
+      if (streamLines.length === 0) {
+        console.log('No variant streams found');
         return Empty;
       }
       
-      const variantUrl = streamMatch[0];
+      const variantUrl = streamLines[0];
       console.log('Selected variant URL:', variantUrl);
       
       // Ambil variant playlist
@@ -67,7 +106,6 @@ async function handler(req: Request): Promise<Response> {
         headers: {
           "Referer": "https://supjav.com/",
           "User-Agent": UA,
-          "Origin": "https://supjav.com"
         },
       });
       
@@ -77,26 +115,20 @@ async function handler(req: Request): Promise<Response> {
       }
       
       let variantContent = await variantResponse.text();
-      console.log('Variant playlist content length:', variantContent.length);
+      console.log('Variant playlist received');
       
       // Rewrite URLs untuk proxy melalui worker
       const variantUrlObj = new URL(variantUrl);
       const basePath = variantUrlObj.pathname.split('/').slice(0, -1).join('/');
       
-      variantContent = variantContent.replace(/(\n[^#][^\n]*\.ts)/g, (match, p1) => {
-        const segmentUrl = p1.trim();
-        if (segmentUrl.startsWith('http')) return match;
-        
-        const absoluteUrl = new URL(segmentUrl, `https://${variantUrlObj.hostname}${basePath}/`).href;
-        return '\n' + absoluteUrl;
-      });
+      variantContent = variantContent.split('\n').map(line => {
+        if (line.startsWith('https://') && line.includes('.ts')) {
+          const segmentUrl = new URL(line);
+          return `${uri.origin}/${variantUrlObj.hostname}/stream${segmentUrl.pathname}`;
+        }
+        return line;
+      }).join('\n');
       
-      // Ganti semua URL segment dengan proxy URL melalui worker
-      variantContent = variantContent.replace(/https?:\/\/[^\/]+\/([^\s]+\.ts)/g, (match, segmentPath) => {
-        return `${uri.origin}/${variantUrlObj.hostname}/stream/${segmentPath}`;
-      });
-      
-      // Kembalikan variant playlist yang sudah dimodifikasi
       return new Response(variantContent, {
         headers: {
           "Content-Type": "application/vnd.apple.mpegurl",
@@ -110,13 +142,15 @@ async function handler(req: Request): Promise<Response> {
     }
   }
 
-  // Bagian untuk proxy penuh (stream video segments .ts files)
-  if (uri.pathname.match(/^\/.*?\/stream\//)) {
-    const pathParts = uri.pathname.split('/');
-    const cdnHost = pathParts[1];
-    const segmentPath = '/' + pathParts.slice(3).join('/');
+  // Bagian untuk proxy segment .ts files
+  if (pathname.match(/^\/[^\/]+\/stream\//)) {
+    const match = pathname.match(/^\/([^\/]+)\/stream\/(.+)$/);
+    if (!match) return Empty;
     
-    const segmentUrl = new URL(segmentPath, `https://${cdnHost}`);
+    const cdnHost = match[1];
+    const segmentPath = match[2];
+    
+    const segmentUrl = new URL(`https://${cdnHost}/${segmentPath}`);
     console.log('Proxying segment:', segmentUrl.href);
     
     try {
@@ -124,7 +158,6 @@ async function handler(req: Request): Promise<Response> {
         headers: { 
           "Referer": "https://supjav.com/",
           "User-Agent": UA,
-          "Origin": "https://supjav.com"
         } 
       });
       
@@ -146,19 +179,11 @@ async function handler(req: Request): Promise<Response> {
     }
   }
 
-  // ... (Bagian lainnya tetap sama - popular, search, category) ...
-  // Bagian untuk redirect ke URL proxy Worker
-  if (uri.pathname.match(/^\/\d+(\.html)?$/)) {
-    const id = uri.pathname.match(/\d+/)![0];
+  // Redirect dari .html ke .m3u8
+  if (pathname.match(/^\/\d+(\.html)?$/)) {
+    const id = pathname.match(/\d+/)![0];
     console.log('Redirecting for ID:', id);
     
-    const url = await getM3U8ById(id);
-    if (url === null) return Empty;
-    
-    const urlobj = new URL(url);
-    console.log('Redirecting to M3U8:', `/${id}.m3u8`);
-    
-    // Alihkan langsung ke endpoint M3U8 worker
     return new Response(null, {
       status: 307,
       headers: { 
@@ -168,9 +193,9 @@ async function handler(req: Request): Promise<Response> {
     });
   }
 
-  // Bagian untuk membuat playlist M3U
-  if (uri.pathname.match(/^\/popular\/(day|week|month)$/)) {
-    const type = uri.pathname.split("/").pop();
+  // Popular videos
+  if (pathname.match(/^\/popular\/(day|week|month)$/)) {
+    const type = pathname.split("/").pop();
     if (!type) return Empty;
     
     let p = "/";
@@ -189,12 +214,57 @@ async function handler(req: Request): Promise<Response> {
     });
   }
 
-  // ... (search dan category handlers tetap sama) ...
+  // Search
+  if (pathname.startsWith("/search/")) {
+    const param = decodeURIComponent(pathname.slice(8));
+    let p = "/";
+    if (lang !== "en") p += lang + "/";
+    const base = new URL(p, "https://supjav.com");
+    base.searchParams.set("s", param);
+    
+    const list = await getList(base);
+    if (!list || list.length === 0) return Empty;
+    
+    return new Response(makePlayList(list, uri.origin), {
+      headers: {
+        "Content-Type": "application/vnd.apple.mpegurl",
+        "Access-Control-Allow-Origin": "*",
+      }
+    });
+  }
 
-  return Empty;
+  // Categories
+  for (const [key, path] of Object.entries(GroupMap)) {
+    if (!pathname.startsWith(`/${key}/`)) continue;
+
+    let p = "/";
+    if (lang !== "en") p += lang + "/";
+    const param = decodeURIComponent(pathname.slice(key.length + 2));
+    const base = new URL(p + path + param, "https://supjav.com");
+    const pages = parseInt(uri.searchParams.get("pages") || "1");
+    
+    const list = await getList(base, pages);
+    if (!list || list.length === 0) return Empty;
+    
+    return new Response(makePlayList(list, uri.origin), {
+      headers: {
+        "Content-Type": "application/vnd.apple.mpegurl",
+        "Access-Control-Allow-Origin": "*",
+      }
+    });
+  }
+
+  // 404 untuk path yang tidak dikenal
+  return new Response("Page not found", { 
+    status: 404,
+    headers: {
+      "Content-Type": "text/plain",
+      "Access-Control-Allow-Origin": "*"
+    }
+  });
 }
 
-// ... (Fungsi getM3U8ById, extractMediaList, fetchBody, getList, makePlayList, makeServerList tetap sama) ...
+// ... (Fungsi getM3U8ById, extractMediaList, fetchBody, getList, makePlayList, makeServerList tetap sama seperti sebelumnya) ...
 
 export async function getM3U8ById(id: string): Promise<string | null> {
   try {
@@ -246,7 +316,7 @@ export async function getM3U8ById(id: string): Promise<string | null> {
     }
     
     const data2 = await req2.text();
-    console.log('API response:', data2.substring(0, 200) + '...');
+    console.log('API response received');
     
     const urlMatch = data2.match(/urlPlay.*?(https?:\/\/[^\s\"']+\.m3u8)/);
     if (urlMatch === null) {
@@ -264,7 +334,112 @@ export async function getM3U8ById(id: string): Promise<string | null> {
   }
 }
 
-// ... (Fungsi-fungsi lainnya tetap sama) ...
+type MediaItem = {
+  id: string;
+  title: string;
+  thumb: string;
+};
+
+export function extractMediaList(body: string): MediaItem[] | null {
+  try {
+    const list = body.match(
+      /<a href="https:\/\/supjav\.com\/.*?\d+\.html".*?title=".*?".*?data-original=".*?"/gms
+    );
+    
+    if (!list) {
+      console.log('No media items found in page');
+      return null;
+    }
+    
+    const results = list.map((item) => {
+      const idMatch = item.match(/supjav\.com\/.*?(\d+)\.html/);
+      const titleMatch = item.match(/title="(.*?)"/);
+      const thumbMatch = item.match(/data-original="(.*?)"/);
+      
+      if (!idMatch || !titleMatch || !thumbMatch) return null;
+      
+      return {
+        id: idMatch[1],
+        title: titleMatch[1].replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(dec)),
+        thumb: thumbMatch[1].split("!")[0],
+      };
+    }).filter((item): item is MediaItem => item !== null);
+    
+    console.log('Extracted', results.length, 'media items');
+    return results;
+  } catch (error) {
+    console.error("Error in extractMediaList:", error);
+    return null;
+  }
+}
+
+async function fetchBody(url: string | URL): Promise<string> {
+  try {
+    console.log('Fetching page:', url.toString());
+    const req = await fetch(url.toString(), {
+      headers: {
+        "User-Agent": UA,
+        "Referer": REFERER,
+      },
+    });
+    
+    if (!req.ok) {
+      console.log('Page fetch failed:', req.status, req.statusText);
+      throw new Error(`HTTP ${req.status}`);
+    }
+    
+    return await req.text();
+  } catch (error) {
+    console.error("Error in fetchBody:", error);
+    throw error;
+  }
+}
+
+async function getList(base: URL, pages: number = 1): Promise<MediaItem[]> {
+  try {
+    console.log("Getting list from:", base.href);
+    const arr: Promise<string>[] = [fetchBody(base)];
+    
+    for (let i = 2; i <= pages; i++) {
+      const u = new URL(base.href);
+      if (!u.pathname.endsWith("/")) u.pathname += "/";
+      u.pathname = u.pathname + "page/" + i;
+      arr.push(fetchBody(u));
+    }
+    
+    const list = await Promise.all(arr);
+    const mediaLists = list.map(extractMediaList).filter((i): i is MediaItem[] => i !== null);
+    
+    const result = mediaLists.flat();
+    console.log('Total items found:', result.length);
+    return result;
+  } catch (error) {
+    console.error("Error in getList:", error);
+    return [];
+  }
+}
+
+function makePlayList(list: MediaItem[], host: string): string {
+  let str = "#EXTM3U\n";
+  for (const item of list) {
+    str += '#EXTINF:-1 tvg-logo="' + item.thumb + '",' + item.title + "\n";
+    str += host + "/" + item.id + ".m3u8\n";
+  }
+  return str;
+}
+
+function makeServerList(arr: RegExpMatchArray): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const item of arr) {
+    const i = item.indexOf(">");
+    if (i === -1) continue;
+    
+    const key = item.slice(i + 1, -1);
+    const val = item.slice(11, i - 1);
+    result[key] = val;
+  }
+  return result;
+}
 
 export default {
   fetch: handler
