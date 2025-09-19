@@ -45,14 +45,30 @@ async function handler(req) {
     }
 
     // 2️⃣ endpoint detail m3u8 per id
-if (uri.pathname.match(/^\/json\/m3u8\/(\d+)/)) {
-  const id = uri.pathname.split("/").pop();
-  const m3u8Url = await getM3U8ById(id);
-  if (!m3u8Url) return Empty;
-  return new Response(JSON.stringify({ id, m3u8Url }, null, 2), {
+// 2️⃣ endpoint detail m3u8 satu atau banyak id
+if (uri.pathname.match(/^\/json\/m3u8\//)) {
+  const idsParam = uri.pathname.split("/").pop();
+  if (!idsParam) return Empty;
+
+  const ids = idsParam.split("-").filter(Boolean);
+
+  // optional: batasi biar tidak lewat limit 50 subrequest
+  if (ids.length > 20) {
+    return new Response("Max 20 IDs per request", { status: 400 });
+  }
+
+  const results = await Promise.all(
+    ids.map(async (id) => {
+      const m3u8Url = await getM3U8ById(id);
+      return m3u8Url ? { id, m3u8Url } : null;
+    })
+  );
+
+  return new Response(JSON.stringify(results.filter(Boolean), null, 2), {
     headers: { "content-type": "application/json" },
   });
 }
+
 
     return Empty;
   } catch (err) {
