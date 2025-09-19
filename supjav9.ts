@@ -53,7 +53,7 @@ async function handler(req: Request): Promise<Response> {
       </html>
     `, {
       headers: {
-        "Content-Type": "text/html",
+        "Content-Type": "text/html; charset=utf-8",
         "Access-Control-Allow-Origin": "*"
       }
     });
@@ -119,7 +119,6 @@ async function handler(req: Request): Promise<Response> {
       
       // Rewrite URLs untuk proxy melalui worker
       const variantUrlObj = new URL(variantUrl);
-      const basePath = variantUrlObj.pathname.split('/').slice(0, -1).join('/');
       
       variantContent = variantContent.split('\n').map(line => {
         if (line.startsWith('https://') && line.includes('.ts')) {
@@ -193,7 +192,7 @@ async function handler(req: Request): Promise<Response> {
     });
   }
 
-  // Popular videos
+  // Popular videos - INI YANG DIPERBAIKI
   if (pathname.match(/^\/popular\/(day|week|month)$/)) {
     const type = pathname.split("/").pop();
     if (!type) return Empty;
@@ -206,15 +205,18 @@ async function handler(req: Request): Promise<Response> {
     const list = await getList(base);
     if (!list || list.length === 0) return Empty;
     
-    return new Response(makePlayList(list, uri.origin), {
+    const playlistContent = makePlayList(list, uri.origin);
+    
+    return new Response(playlistContent, {
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",
         "Access-Control-Allow-Origin": "*",
+        "Content-Disposition": "inline; filename=\"playlist.m3u8\"",
       }
     });
   }
 
-  // Search
+  // Search - INI YANG DIPERBAIKI
   if (pathname.startsWith("/search/")) {
     const param = decodeURIComponent(pathname.slice(8));
     let p = "/";
@@ -225,15 +227,18 @@ async function handler(req: Request): Promise<Response> {
     const list = await getList(base);
     if (!list || list.length === 0) return Empty;
     
-    return new Response(makePlayList(list, uri.origin), {
+    const playlistContent = makePlayList(list, uri.origin);
+    
+    return new Response(playlistContent, {
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",
         "Access-Control-Allow-Origin": "*",
+        "Content-Disposition": "inline; filename=\"search.m3u8\"",
       }
     });
   }
 
-  // Categories
+  // Categories - INI YANG DIPERBAIKI
   for (const [key, path] of Object.entries(GroupMap)) {
     if (!pathname.startsWith(`/${key}/`)) continue;
 
@@ -246,10 +251,13 @@ async function handler(req: Request): Promise<Response> {
     const list = await getList(base, pages);
     if (!list || list.length === 0) return Empty;
     
-    return new Response(makePlayList(list, uri.origin), {
+    const playlistContent = makePlayList(list, uri.origin);
+    
+    return new Response(playlistContent, {
       headers: {
         "Content-Type": "application/vnd.apple.mpegurl",
         "Access-Control-Allow-Origin": "*",
+        "Content-Disposition": `inline; filename="${key}.m3u8"`,
       }
     });
   }
@@ -264,9 +272,8 @@ async function handler(req: Request): Promise<Response> {
   });
 }
 
-// ... (Fungsi getM3U8ById, extractMediaList, fetchBody, getList, makePlayList, makeServerList tetap sama seperti sebelumnya) ...
-
-export async function getM3U8ById(id: string): Promise<string | null> {
+// Fungsi getM3U8ById
+async function getM3U8ById(id: string): Promise<string | null> {
   try {
     console.log('Fetching HTML for ID:', id);
     const req1 = await fetch(`https://supjav.com/${id}.html`, {
@@ -334,13 +341,8 @@ export async function getM3U8ById(id: string): Promise<string | null> {
   }
 }
 
-type MediaItem = {
-  id: string;
-  title: string;
-  thumb: string;
-};
-
-export function extractMediaList(body: string): MediaItem[] | null {
+// Fungsi extractMediaList
+function extractMediaList(body: string): MediaItem[] | null {
   try {
     const list = body.match(
       /<a href="https:\/\/supjav\.com\/.*?\d+\.html".*?title=".*?".*?data-original=".*?"/gms
@@ -373,6 +375,7 @@ export function extractMediaList(body: string): MediaItem[] | null {
   }
 }
 
+// Fungsi fetchBody
 async function fetchBody(url: string | URL): Promise<string> {
   try {
     console.log('Fetching page:', url.toString());
@@ -395,6 +398,7 @@ async function fetchBody(url: string | URL): Promise<string> {
   }
 }
 
+// Fungsi getList
 async function getList(base: URL, pages: number = 1): Promise<MediaItem[]> {
   try {
     console.log("Getting list from:", base.href);
@@ -419,6 +423,7 @@ async function getList(base: URL, pages: number = 1): Promise<MediaItem[]> {
   }
 }
 
+// Fungsi makePlayList
 function makePlayList(list: MediaItem[], host: string): string {
   let str = "#EXTM3U\n";
   for (const item of list) {
@@ -428,6 +433,7 @@ function makePlayList(list: MediaItem[], host: string): string {
   return str;
 }
 
+// Fungsi makeServerList
 function makeServerList(arr: RegExpMatchArray): Record<string, string> {
   const result: Record<string, string> = {};
   for (const item of arr) {
@@ -440,6 +446,13 @@ function makeServerList(arr: RegExpMatchArray): Record<string, string> {
   }
   return result;
 }
+
+// Type definition
+type MediaItem = {
+  id: string;
+  title: string;
+  thumb: string;
+};
 
 export default {
   fetch: handler
